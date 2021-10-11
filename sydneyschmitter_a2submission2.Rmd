@@ -1,0 +1,201 @@
+---
+title: "sydneyschmitter_A2"
+author: "Sydney Schmitter"
+date: "9/30/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#First, I downloaded the packages I needed for this assignment.
+library(tidyverse)
+library(sf)
+library(tigris)
+library(censusapi)
+library(mapview)
+library(leaflet)
+library(ggplot2)
+```
+
+```{r}
+#Next, I knew that I needed to grab decennial census data for both 2020, as well as 2010.
+Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+
+#Here, I grabbed 2020 decennial census data for San Mateo County.
+smc_pop_2020 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2020,
+    region = "block:*", 
+    regionin = "state:06+county:081",
+    vars = "P1_001N"
+  ) %>% 
+  transmute(
+    block =
+      paste0(state,county,tract,block),
+    pop = P1_001N
+  )
+
+dec_vars_2020 <-
+  listCensusMetadata(
+    name = "2020/dec/pl",
+    type = "variables"
+  )
+
+dec_vars_2020 %>% 
+  filter(grepl("P1",name)) %>% 
+  select(name, label) %>% 
+  arrange(name)
+
+#I created a shapefile to map the boundaries of San Mateo County
+blocks_2020 <- blocks("CA", "San Mateo", year = 2020, progress_bar = F)
+
+#I created a shapefile to map the boundaries of North Fair Oaks
+nfo_boundary <- places("CA", progress_bar = F) %>% 
+  filter(NAME == "North Fair Oaks")
+
+#I created a specific population dataset for North Fair Oaks
+nfo_pop_2020 <- smc_pop_2020 %>% 
+  left_join(blocks_2020 %>% select(block = GEOID20)) %>% 
+  st_as_sf() %>% 
+  st_centroid() %>% 
+  .[nfo_boundary, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(blocks_2020 %>% select(block = GEOID20)) %>% 
+  st_as_sf()
+```
+
+```{r}
+Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+
+#Like above, I repeated the same exact process for 2010 decennial census data.
+smc_pop_2010 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2010,
+    region = "block:*", 
+    regionin = "state:06+county:081",
+    vars = "P001001"
+  ) %>% 
+  transmute(
+    block =
+      paste0(state,county,tract,block),
+    pop = P001001
+  )
+
+dec_vars_2010 <-
+  listCensusMetadata(
+    name = "2010/dec/pl",
+    type = "variables"
+  )
+
+dec_vars_2010 %>% 
+  filter(grepl("P1",name)) %>% 
+  select(name, label) %>% 
+  arrange(name)
+
+blocks_2010 <- blocks("CA", "San Mateo", year = 2010, progress_bar = F)
+
+nfo_boundary <- places("CA", progress_bar = F) %>% 
+  filter(NAME == "North Fair Oaks")
+
+nfo_pop_2010 <- smc_pop_2010 %>% 
+  left_join(blocks_2010 %>% select(block = GEOID10)) %>% 
+  st_as_sf() %>% 
+  st_centroid() %>% 
+  .[nfo_boundary, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(blocks_2010 %>% select(block = GEOID10)) %>% 
+  st_as_sf()
+```
+
+```{r}
+place_boundary <- places("CA", progress_bar = F) %>% 
+  filter(NAME == "North Fair Oaks")
+  
+mapview(place_boundary) + mapview(nfo_pop_2010, alpha.regions = 0, color = "red", lwd = 2)
+```
+
+```{r}
+#Now, I will use spatial subsetting from 2.4 to see where 2020 North Fair Oaks blocks intersect with 2010 North Fair Oaks blocks
+colnames(nfo_pop_2020)<- c("GEOID20","pop","geometry")
+
+place_blocks_2020_intersect <- nfo_pop_2020 %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.)) %>% 
+  st_intersection(
+    place_boundary %>% 
+    select(block = GEOID) %>%
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = as.numeric(leftover_area / original_area),
+    pop_2020 = pop * perc_area
+  )
+
+```
+
+```{r}
+place_blocks_2020_reshaped <- place_blocks_2020_intersect %>%
+  st_drop_geometry() %>% 
+  group_by(GEOID20) %>% 
+  summarize(
+    pop_2020 = sum(pop_2020, na.rm=T) %>% round()
+  )
+
+colnames(nfo_pop_2010)<- c("GEOID","pop","geometry")
+colnames(place_blocks_2020_reshaped)<- c("GEOID","pop_2020")
+
+place_pop_2010_2020 <- nfo_pop_2010 %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.)) %>% 
+  st_intersection(
+    place_boundary %>% 
+    select(block = GEOID) %>%
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = as.numeric(leftover_area / original_area),
+    pop_2020 = pop * perc_area
+  )
+
+projection <- place_blocks_2020_reshaped
+
+place_pop_2010_2020 <- nfo_pop_2010 %>% 
+  left_join(projection %>% select(GEOID, pop_2020)) %>% 
+  mutate(
+    absolute_pop = (pop_2020 - pop) / as.numeric(st_area(.)) * 43560
+  )
+```
+
+```{r}
+absolute_pal <- colorNumeric(
+palette = "Reds",
+domain = 
+    place_pop_2010_2020$absolute_pop
+)
+
+#Finally, I would create a map with the above data.
+leaflet(place_pop_2010_2020) %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    fillColor = ~absolute_pal(absolute_pop),
+    label = ~round(absolute_pop),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.75,
+    weight = 1,
+  ) %>% 
+  addLegend(
+    pal = absolute_pal,
+    values = ~absolute_pop,
+    title = "Absolute Change in Population, North Fair Oaks (2010-2020)"
+  ) 
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
