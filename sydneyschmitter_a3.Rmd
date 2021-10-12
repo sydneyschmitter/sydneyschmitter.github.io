@@ -1,0 +1,212 @@
+---
+title: "sydneyschmitter_a3"
+author: "Sydney Schmitter"
+date: "10/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(censusapi)
+library(tidyverse)
+library(tigris)
+library(sf)
+library(leaflet)
+
+Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+```
+
+```{r}
+temp <- tempfile()
+download.file("https://www2.census.gov/programs-surveys/acs/data/pums/2019/1-Year/csv_hca.zip",destfile = temp)
+
+pums_hca_2019_1yr <- read_csv(unzip(temp,"psam_h06.csv"))
+
+unlink(temp)
+```
+
+```{r}
+pums_2019_1yr <- getCensus(
+  name = "acs/acs1/pums",
+  vintage = 2019,
+  region = "public use microdata area:*", 
+  regionin = "state:06",
+  vars = c(
+    "SERIALNO",
+    "SPORDER",
+    "PWGTP",
+    "WGTP",
+    "NP",
+    "HHL",
+    "HINCP",
+    "FPARC",
+    "R65",
+    "TEN"
+  )
+)
+```
+
+```{r}
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+bay_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+bay_pums <-
+  pums_2019_1yr %>% 
+  mutate(
+    PUMA = str_pad(public_use_microdata_area,5,"left","0")
+  ) %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+
+bay_sum <-
+  pums_2019_1yr %>% 
+  mutate(
+    PUMA = str_pad(public_use_microdata_area,5,"left","0")
+  ) %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+
+bay_sum <- 
+  bay_pums %>% 
+  filter(!duplicated(SERIALNO)) %>% 
+  mutate(
+    WGTP = as.numeric(WGTP),
+    elderly_lowinc_nochild = ifelse(
+      (R65 == 1) &
+        (FPARC == 4) &
+        (HINCP < 100000),
+      WGTP,
+      0
+    )
+  ) %>%
+  group_by(PUMA) %>% 
+  left_join(
+    bay_pumas %>% 
+      select(PUMACE10),
+    by = c("PUMA" = "PUMACE10")
+  ) %>% 
+  st_as_sf()
+
+sum(bay_sum$elderly_lowinc_nochild)
+```
+
+```{r}
+bay_pums <-
+  bay_pums %>% 
+  filter(!duplicated(SERIALNO)) %>% 
+  mutate(
+    WGTP = as.numeric(WGTP),
+    elderly_lowinc_nochild = ifelse(
+      (R65 == 1) &
+        (FPARC == 4) &
+        (HINCP < 100000),
+      WGTP,
+      0
+    )
+  ) %>% 
+  group_by(PUMA) %>% 
+  summarize(
+    perc_elderly_lowinc_nochild =
+      sum(elderly_lowinc_nochild, na.rm =T)/sum(WGTP, na.rm = T)*100
+  ) %>% 
+  left_join(
+    bay_pumas %>% 
+      select(PUMACE10),
+    by = c("PUMA" = "PUMACE10")
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+pums_pal <- colorNumeric(
+  palette = "Greens",
+  domain = bay_pums$perc_elderly_lowinc_nochild
+)
+
+leaflet() %>%
+  addTiles() %>% 
+  addPolygons(
+    data = bay_pums,
+    fillColor = ~pums_pal(perc_elderly_lowinc_nochild),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(perc_elderly_lowinc_nochild), 
+      "% 65 years and older households making less than $100K with no children"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = bay_pums,
+    pal = pums_pal,
+    values = ~perc_elderly_lowinc_nochild,
+    title = "% 65 years and older<br>households<br>making less than $100K with no children"
+  )
+```
+```{r}
+pums_pal <- colorNumeric(
+  palette = "Greens",
+  domain = bay_pums$perc_elderly_lowinc_nochild
+)
+
+leaflet() %>%
+  addTiles() %>% 
+  addPolygons(
+    data = bay_pums,
+    fillColor = ~pums_pal(perc_elderly_lowinc_nochild),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(perc_elderly_lowinc_nochild), 
+      "% 65 years and older households making less than $100K with no children"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = bay_pums,
+    pal = pums_pal,
+    values = ~perc_elderly_lowinc_nochild,
+    title = "% 65 years and older<br>households<br>making less than $100K with no children"
+  )
+```
+
+```{r}
+#In my map, I chose to map the percentage of elderly (65 years and older) households making less than $100K per year with no children. I chose to map an elderly population of 65 years and older due to my understanding of the 1995 Chicago heat wave, which lead to a total of 739 heat-related deaths in Chicago over a period of five days. A large number of these deaths included elderly people, which was attributed to a lack of household and community support to provide them with coping strategies to reduce their symptoms of heat-related illness. Therefore, I decided to map a population of 65+ years and older, but I also found it necessary to map households with no children. I chose to map households rather than individuals because I thought it was necessary to distinguish between individuals and households for elderly people as a household living situation will increase risk of heat-related illness and death, as there is a higher chance the elderly person will need to complete their own daily tasks to live, and thus mitigate their symptoms of heat-related illness. I also chose to map elderly households with no children because according to Klineberg et. al in discussion of the Chicago heatwave, children of elderly populations were a key contributor to helping their parents during the Chicago heatwave to mitigate their experience of heat-related illness. Finally, I chose to map households making less than $100K per year, which is considered generally low-income in this area. An income a this level would likely mean that an elderly household would not be able to afford live-in care or extra help to mitigate their experience with a heat wave. This map would be especially helpful for policy makers to identify in which parts of the Bay Area that this population lives to identify how to best support this population. Overall, a total of 69,431 households fit the demographic I mapped and are especially vulnerable to heat impacts.  
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
