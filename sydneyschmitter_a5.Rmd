@@ -1,0 +1,181 @@
+---
+title: "sydneyschmitter_a5"
+author: "Sydney Schmitter"
+date: "10/21/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+library(tidyverse)
+library(censusapi)
+library(sf)
+library(tigris)
+library(mapview)
+library(readxl)
+library(leaflet)
+
+temp <- tempfile()
+download.file("https://oehha.ca.gov/media/downloads/calenviroscreen/document/calenviroscreen40resultsdatadictionaryf2021.zip",destfile = temp)
+
+ces4 <- read_excel("calenviroscreen40resultsdatadictionary_F_2021.xlsx")
+
+colnames(ces4)
+
+ces4_clean <- ces4 %>% 
+  dplyr::select(!ends_with("Pctl"))
+
+sum(is.na(ces4_clean$Poverty))
+
+ces4_clean %>% 
+  # .$Poverty %>%
+  pull(Poverty) %>% 
+  is.na() %>% 
+  sum()
+
+ca_tracts <- tracts("CA")
+
+ces4_map <- ces4_clean %>% 
+  left_join(
+    ca_tracts %>% 
+      transmute(GEOID = GEOID %>% as.numeric()),
+    by = c("Census Tract" = "GEOID")
+  ) %>% 
+  st_as_sf()
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+ces4_bay_asthma <-
+  ces4_clean %>% 
+  filter(`California County` %in% bay_county_names) %>% #filters for counties in the Bay Area only 
+  select(`Census Tract`, Asthma) %>% 
+  left_join(
+    ca_tracts %>% 
+      transmute(GEOID = GEOID %>% as.numeric()), 
+    by = c("Census Tract" = "GEOID")
+  ) %>% 
+  st_as_sf()
+
+ces4_bay_PM2.5 <-
+  ces4_clean %>% 
+  filter(`California County` %in% bay_county_names) %>% #filters for counties in the Bay Area only 
+  select(`Census Tract`, PM2.5) %>% 
+  left_join(
+    ca_tracts %>% 
+      transmute(GEOID = GEOID %>% as.numeric()), 
+    by = c("Census Tract" = "GEOID")
+  ) %>% 
+  st_as_sf()
+
+#Retrieve CES 4.0 data for census tracts in the Bay Area. Produce two maps, using either `mapview()` or `leaflet()`: one of PM2.5, and one of Asthma, as defined by CES. Provide brief comments on where the maps show concentrations of high PM2.5 and high Asthma prevalence. Make sure to use the data methodology information in the CalEnviroScreen report to define your two variables accurately in the text of your report (i.e., the reader should know what years the data is based on, what exactly the units of measurement are, etc.) 
+#MAP 1
+mapview(ces4_bay_asthma, zcol = "Asthma", legend = TRUE, label = "Asthma")
+#Description: Asthma is a chronic lung disease characterized by episodic breathlessness, wheezing, coughing, and chest tightness. It is established that exposure to traffic and outdoor air pollutants, including particulate matter and ozone can trigger asthma attacks. Asthma can be a life threatening condition for humans. This map depicts a spatially modeled, age-adjusted rate of emergency department visits for asthma per 10,000 averaged from 2015 to 2017. This map shows increased incidences of the rate of emergency department visits for asthma per 10,000 in the East Bay in Alameda County, specifically in Oakland and San Leandro. However, there is also a high raate of emergency department visits for asthma per 10,000 in Richmond and Hunter's Point of San Francisco as well.
+
+
+#MAP 2
+mapview(ces4_bay_PM2.5, zcol = "PM2.5", legend = TRUE, label = "PM2.5")
+#Description: Particulate matter pollution, and fine particle (PM2.5) pollution in particular, has been linked to numerous health effects such as heart and lung disease, contributing to mortality in California. This map depicts the annual mean concentration of PM2.5 per county, using a weighted average of measured monitor concentration and satellite observations in µg/m3 from 2015 to 2017. The map shows relatively evenly distributed PM2.5 concentrations in the Bay Area, with a slight increase in PM2.5 concentrations in Alameda County in the East Bay. 
+
+#Create a scatter plot with PM2.5 on the x-axis and Asthma on the y-axis, with a best-fit line (`geom_smooth()` ok). Comment on the apparent “fitness” of the best-fit line at this stage.
+#MAP 3
+ggplot(
+  data = ces4_map,
+  aes(
+      x = PM2.5,
+      y = Asthma
+    ) 
+  ) +
+  labs(
+    x = "PM2.5",
+    y = "Asthma",
+    title = "Scatter plot of PM2.5 x Asthma",
+  ) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+#Comment on fitness of the best fit line: The best fit line shows a slight positive correlation between higher concentrations of PM2.5 matter being linked to an increased rate of emergency department visits due to asthma. With the exception of the outstanding data in the middle of the graph, the best fit line seems to fit the data pretty well given the high number of data points.
+
+#Perform a linear regression analysis using `lm()` and report the results. Give a layperson’s interpretation of the results of your regression model, including these statements, filling in the blanks: “An increase of _ in _ is associated with an increase of _ in _”; “_% of the variation in _ is explained by the variation in _”. (minimum result)
+model <- lm(Asthma ~ PM2.5, ces4_map)
+summary(model)
+
+#Call:
+#lm(formula = Asthma ~ PM2.5, data = ces4_map)
+
+#Residuals:
+#    Min      1Q  Median      3Q     Max 
+#-50.424 -21.485  -6.539  13.432 193.479 
+
+#Coefficients:
+#            Estimate Std. Error t value Pr(>|t|)    
+#(Intercept)  34.4917     1.6229   21.25   <2e-16 ***
+#PM2.5         1.7228     0.1564   11.02   <2e-16 ***
+#---
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+#Residual standard error: 30.34 on 8022 degrees of freedom
+# (11 observations deleted due to missingness)
+#Multiple R-squared:  0.01491,	Adjusted R-squared:  0.01479 
+#F-statistic: 121.4 on 1 and 8022 DF,  p-value: < 2.2e-16
+
+#Linear regression analysis: After looking at the summary of the model above, I noticed first that residuals are generally not centered around 0 and do not have a roughly symmetrical distribution. I next looked at the slope coefficient, or regression coefficient, which represents the mean change in the response variable, PM2.5, for one unit of change in the predictor variable. For every one increase in x, there is an exp(1.7228), or 5.6 increase in y. Finally, I looked at the R-squared value for the linear regression analysis, which is a measure of the shared variance between x and y values. Variation in x explains 1.5% of the variation in y. Due to the residuals in my linear model appearing significantly skewed and the other components of my linear regression analysis, I believe that the original data appears to be better fit by a curve than by a straight line, and will apply a log transformation to my model.
+
+#An increase of 1 in x is associated with an increase of 5.6 in y”; “1.5% of the variation in x is explained by the variation in y”. (minimum result)
+
+model <- lm(log(Asthma) ~ PM2.5, ces4_map)
+summary(model)
+
+#After checking the residuals of the model after this step yielded a much more normal distribution of :
+  #Residuals:
+  #  Min      1Q  Median      3Q     Max 
+#-2.4046 -0.3767  0.0252  0.3826  1.7603 
+
+#Linear regression analysis: After looking at the summary of the model above, I noticed first that residuals are generally  centered around 0 and have a roughly symmetrical distribution. I next looked at the slope coefficient, or regression coefficient, which represents the mean change in the response variable, PM2.5, for one unit of change in the predictor variable. For every one increase in x, there is an exp(.04387), or 1 increase in y. Finally, I looked at the R-squared value for the linear regression analysis, which is a measure of the shared variance between x and y values. Variation in x explains 2.6% of the variation in y. 
+
+#An increase of 1 in x is associated with an increase of 1 in y”; “2.6% of the variation in x is explained by the variation in y”. (minimum result)
+
+ggplot(
+  data = ces4_map,
+  aes(
+      x = PM2.5,
+      y = log(Asthma)
+    ) 
+  ) +
+  labs(
+    x = "PM2.5",
+    y = "Asthma",
+    title = "Scatter plot of PM2.5 x Asthma",
+  ) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+
+plot(density(residuals(model)))
+#Perform `plot(density(residuals(model)))` at this stage, where `model` is the name of the object that holds the results of your regression analysis. Describe what’s wrong with the residual distribution, and repeat steps 2-3 with a log transformation on your model. Note that one extra paragraph was added to Chapter 5.1 (right before the PG&E example) as of 10/18, which is relevant to this step of the assignment. (6.5 points)
+
+#Perform `plot(density(residuals(model)))` again and describe how the result has changed. Then create a third map, this time of the residuals themselves. You’ll need to combine `residuals(model)` with spatial information; note that the order of `residuals(model)` should exactly match the order of records you supplied to `lm()`. Identify the census tract with the most negative “residual” (state what place it is!). Explain what a negative residual means in the context of Asthma estimation (i.e., under- or over-estimation), and why you think this census tract in particular has one. 
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
