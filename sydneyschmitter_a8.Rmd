@@ -1,0 +1,294 @@
+---
+title: "sydneyschmitter_a8"
+author: "Sydney Schmitter"
+date: "11/11/2021"
+output: html_document
+---
+
+```{r}
+library(tigris)
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(censusapi)
+library(leaflet)
+library(StatMatch)
+
+setwd("~/Desktop/Shaping the Future of the Bay Area")
+
+Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+bay_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+#Make map of affected PUMA by BART station in blue outline, make marker of Antioch BART station
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = bay_pumas,
+    weight = 1,
+    color = "gray",
+    label = ~PUMACE10
+  ) %>% 
+  addMarkers(
+    lat = 37.996281,
+    lng = -121.783404
+  ) %>% 
+  addPolygons(
+    data = bay_pumas %>% 
+      filter(PUMACE10 == "01309")
+  )
+
+```
+
+```{r}
+pums_2014_2019 <- readRDS("pums_2014_2019_wts.rds")
+  
+pums_bart <- pums_2014_2019 %>%
+  mutate(
+    PWGTP = as.numeric(PWGTP),
+    bart = ifelse(
+      JWTR %in% c("4"),
+      PWGTP,
+      0
+    )
+  ) %>% 
+  group_by(PUMA, year) %>% 
+  summarize(
+    pop = sum(PWGTP),
+    bart = sum(bart)
+  )
+
+pums_pal <- colorNumeric(
+  palette = "YlOrRd",
+  domain = pums_bart %>% 
+    filter(year == 2019) %>% 
+    pull(pop)
+)
+
+#Create map of distribution of population and BART commuters in the Bay Area PUMAs for 2019
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = pums_bart %>% 
+      filter(year == 2019) %>% 
+      right_join(bay_pumas %>% select(PUMA = PUMACE10)) %>% 
+      st_as_sf(),
+    fillColor = ~pums_pal(pop),
+    color = "white",
+    weight = 1,
+    fillOpacity = 0.5,
+    label = ~paste0(PUMA,": Population ", pop)
+  )
+```
+
+```{r}
+pums_pal <- colorNumeric(
+  palette = "GnBu",
+  domain = pums_bart %>% 
+    filter(year == 2019) %>% 
+    pull(bart)
+)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = pums_bart %>% 
+      filter(year == 2019) %>% 
+      right_join(bay_pumas %>% select(PUMA = PUMACE10)) %>% 
+      st_as_sf(),
+    fillColor = ~pums_pal(bart),
+    color = "white",
+    weight = 1,
+    fillOpacity = 0.5,
+    label = ~paste0(PUMA,": ", bart, " BART commute riders")
+  )
+
+```
+
+```{r}
+pums_bart_clean <-
+  pums_bart %>% 
+  select(-pop) %>% 
+  pivot_wider(
+    names_from = year,
+    values_from = bart
+  )
+
+obs_matrix <-
+  pums_bart_clean %>% 
+  ungroup() %>% 
+  select(`2014`,`2015`,`2016`, `2017`) %>% 
+  as.matrix()
+
+dist_matrix <- mahalanobis.dist(obs_matrix)
+
+rownames(dist_matrix) <- pums_bart_clean$PUMA
+colnames(dist_matrix) <- pums_bart_clean$PUMA
+
+match <- dist_matrix["01309",] %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  rename(
+    PUMA = rowname,
+    match = "."
+  ) %>% 
+  right_join(
+    pums_bart_clean
+  ) %>% 
+  arrange(match) %>% 
+  .[1:11, ] %>% 
+  left_join(bay_pumas %>% select(PUMA = PUMACE10)) %>% 
+  st_as_sf()
+
+leaflet() %>% 
+  addTiles() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = match[1, ],
+    color = "red",
+    label = ~PUMA
+  ) %>% 
+  addPolygons(
+    data = match[-1, ],
+    label = ~PUMA
+  )
+```
+
+
+```{r}
+
+match_pumas <-
+  match %>% 
+  filter(!PUMA %in% c("01309")) %>% 
+  st_drop_geometry() %>% 
+  select(-match) %>% 
+  pivot_longer(
+    -PUMA,
+    names_to = "year",
+    values_to = "bart"
+  ) %>%
+  group_by(
+    year
+  ) %>% 
+  summarize(
+    bart = mean(bart),
+    PUMA = "Similar PUMAs"
+  )
+
+treatment_pumas <-
+  match %>% 
+  filter(PUMA %in% c("01309")) %>% 
+  select(-match) %>% 
+  st_drop_geometry() %>% 
+  pivot_longer(
+    -PUMA,
+    names_to = "year",
+    values_to = "bart"
+  )
+
+rbind(
+  treatment_pumas,
+  match_pumas
+) %>% 
+  ggplot(
+    aes(
+      x = as.numeric(year),
+      y = bart,
+      color = PUMA
+    )
+  ) +
+  geom_line() +
+  geom_vline(xintercept = 2018, linetype = "dashed") +
+  labs(
+    title = "Brentwood vs. control neighborhoods, BART ridership",
+    x = "Year",
+    y = "BART commute riders"
+  )
+
+#From this first graph, it looks like the number of BART commute riders has drastically increased in Brentwood and similar PUMAs from 2014 to 2019. A sharp increase in BART users in Brentwood occured in 2017, which drove the number of BART commute riders from less than 500 in 2017 to over 1500 in 2018 alone, which would make sense because the Antioch station opened halfway through 2018. In similar PUMAs, an increase in the number of BART commute riders occurred overall, but the increase in commuters began in 2018 rather than 2017 like in Brentwood.
+
+```
+
+```{r}
+transit_did <-
+  match %>% 
+  st_drop_geometry() %>% 
+  select(-match) %>% 
+  pivot_longer(
+    -PUMA,
+    names_to = "year",
+    values_to = "bart"
+  ) %>% 
+  mutate(
+    year = year %>% as.numeric(),
+    time = ifelse(year >= 2019, 1, 0),
+    treated = ifelse(PUMA == "01309", 1, 0)
+  )
+
+did_reg <- lm(bart ~ treated*time, data = transit_did)
+
+summary(did_reg)
+
+
+# Call:
+# lm(formula = bart ~ treated * time, data = transit_did)
+# 
+# Residuals:
+#    Min     1Q Median     3Q    Max 
+# -687.2 -120.1 -104.7   62.9 2347.8 
+# 
+# Coefficients:
+#              Estimate Std. Error t value Pr(>|t|)    
+# (Intercept)    120.10      57.75   2.080 0.041685 *  
+# treated        707.10     191.52   3.692 0.000472 ***
+# time           713.10     141.45   5.041 4.28e-06 ***
+# treated:time   319.70     469.13   0.681 0.498109    
+# ---
+# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# Residual standard error: 408.3 on 62 degrees of freedom
+# Multiple R-squared:  0.4448,	Adjusted R-squared:  0.4179 
+# F-statistic: 16.55 on 3 and 62 DF,  p-value: 5.184e-08
+```
+
+```{r}
+# Analysis: The opening of the Antioch BART station in 2018 had an estimated impact of about 320 new BART commuters. This analysis is statistically significant because the p-value is less than 5%. The treated variable represents the pre-treatment difference between treatment and control PUMAs, whic is about 707 BART riders. The time variable represents the change in the control PUMAs from pre-treatment to post-treatment, which is about 713 BART riders.
+  
+#Assumptions: Several assumptions were made in this analysis. First, whereas the BART station from the textbook opened in Spring of 2017, the Antioch BART station opened halfway through 2018. I would have liked to have move years of post-treatment data, but could not because of a lack of data available. Extra data could have resulted in a less pronounced or more pronounced impact of the Antioch BART station. Next, I also assumed that the Antioch BART station alone would have an impact on ridership and did not account for any other nearby BART stations opening that could have impacted ridership as the textbook example took into account with the Milpitas vs. Antioch BART station. Along with that assumption, I did not match any other variables other than 2014-2017 train ridership, although I could have very well included other variables for my control group that could have significantly affected my analysis such as race, income, etc. Finally, something that I could have taken into account more was the impact of the Antioch BART station on the surrounding community. Doing a quick search on the Internet showed me that there was controversy over the way the Antioch BART station divided the local community, which could have affected my analysis and been taken in to account.
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
