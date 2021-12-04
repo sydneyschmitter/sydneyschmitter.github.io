@@ -1,0 +1,524 @@
+---
+title: "FinalProject"
+author: "Sydney Schmitter and Emily Liu"
+date: "11/30/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(flexdashboard)
+library(tidyverse)
+library(leaflet)
+library(sf)
+library(plotly)
+library(shiny)
+library(tigris)
+library(mapview)
+library(readxl)
+library(ggplot2)
+library(censusapi)
+
+calenviroscreenthree <- read.csv("calenviroscreen3.0.csv")
+calenviroscreenfour <- read_excel("calenviroscreen4.0.xlsx")
+
+calenviroscreenthreeplot <- calenviroscreenthree %>% select(
+    c(Census.Tract, Total.Population, California.County, Groundwater.Threats, ZIP)) %>% 
+  mutate(Version = "CalEnviroScreen 3.0")
+
+calenviroscreenfourplot <- calenviroscreenfour %>% select(
+    c("Census Tract", "Total Population", "California County", "Groundwater Threats", "ZIP"))
+
+calenviroscreenfourplot <- calenviroscreenfourplot %>% 
+  rename(
+    Census.Tract = "Census Tract",
+    Total.Population = "Total Population",
+    California.County = "California County",
+    Groundwater.Threats = "Groundwater Threats",
+    ZIP = "ZIP"
+    ) %>% 
+  mutate(Version = "CalEnviroScreen 4.0") %>%
+  filter(
+    California.County %in% c("San Francisco")
+  )
+
+
+calenviroscreencombined <- rbind(calenviroscreenfourplot, calenviroscreenthreeplot) %>% 
+  filter(
+    California.County %in% c("San Francisco")
+  )
+
+```
+
+```{r}
+#Next, we will create a spatial map of CalEnviroScreen groundwater exposure risk data for the 4.0 version using leaflet. We will then add a layers of racial composition per census tract to the map. 
+
+bay_county_name <- 
+  c(
+    "San Francisco"
+  )
+
+bay_tracts <-
+   tracts("CA", bay_county_name, cb = T, progress_bar = F)
+
+#spatial data; geoid is census tract number
+calenviroscreenfourplotnew <-
+  calenviroscreenfourplot %>% 
+  mutate(
+    GEOID = paste0("0", Census.Tract)
+  ) %>%
+    mutate(
+     GEOID = GEOID %>% as.character()
+  ) %>% 
+   left_join(
+     bay_tracts %>% select(GEOID),
+     by = c("GEOID" = "GEOID")
+   ) %>% 
+   st_as_sf() %>% 
+   st_transform(4326)
+
+
+res_pal <- colorNumeric(
+  palette = "Blues",
+  domain = 
+    c(0,155)
+)
+
+#Groundwater Threat Map
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = calenviroscreenfourplotnew,
+    fillColor = ~res_pal(Groundwater.Threats),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.8,
+    weight = 1,
+    label = ~paste0(
+      round(Groundwater.Threats), 
+      " on the CalEnviroScreen 4.0 Groundwater Threat Scale in ",
+      ZIP
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = calenviroscreenfourplotnew,
+    pal = res_pal,
+    values = ~c(0,155),
+    title = "Groundwater Threat Risk,<br>CalEnviroScreen 4.0"
+  )
+
+```
+
+```{r}
+#Add layers of race from census data to this map
+Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+
+sfo_pop_2020 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2020,
+    region = "block:*",
+    regionin = "state:06+county:075",
+    vars = "P1_001N"
+  ) %>%
+  transmute(
+    GEOID =
+      paste0(state,county,tract),
+    pop = P1_001N
+  )
+
+dec_vars_2020 <-
+  listCensusMetadata(
+    name = "2020/dec/pl",
+    type = "variables"
+  )
+
+sfo_pop_race_2020 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2020,
+    region = "block:*", 
+    regionin = "state:06+county:075",
+    vars = "group(P1)"
+  ) %>% 
+  mutate(
+    block =
+      paste0(state,county,tract)
+  ) %>% 
+  select(!c(GEO_ID,state,county,tract,NAME) & !ends_with(c("NA"))) %>% 
+  pivot_longer(
+    ends_with("N"),
+    names_to = "name",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    dec_vars_2020 %>% 
+      select(name, label)
+  ) %>% 
+  select(-name) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"category1","category2"),
+    sep = "!!"
+  )
+
+
+sfo_pop_race_2020 <- sfo_pop_race_2020 %>% 
+  mutate(
+    race = case_when(
+      category1 == "Population of two or more races:" & is.na(category2) ~ "Two or more races",
+      category1 == "Population of two or more races:" ~ "",
+      !is.na(category2) ~ category2,
+      TRUE ~ ""
+    )
+  )
+
+sfo_pop_race_2020 <- sfo_pop_race_2020 %>% 
+  filter(race != "") %>% 
+  select(block, race, pop = estimate
+  )
+
+sfo_pop_race_2020 <- sfo_pop_race_2020 %>% 
+  rename(
+    GEOID = "block"
+    )
+
+
+racialdata <-
+  sfo_pop_race_2020 %>% 
+    mutate(
+     GEOID = GEOID %>% as.character()
+  ) %>%
+   left_join(
+     calenviroscreenfourplotnew %>% select(GEOID),
+     by = c("GEOID" = "GEOID")
+   ) %>% 
+    st_as_sf() %>% 
+    st_transform(4326)
+
+whitedata <- racialdata %>%
+  filter(
+    race %in% c("White alone")
+  )
+
+asianalone <- racialdata %>%
+  filter(
+    race %in% c("Asian alone")
+  )
+
+blackalone <- racialdata %>%
+  filter(
+    race %in% c("Black or African American alone")
+  )
+
+pacificislanderalone <- racialdata %>%
+  filter(
+    race %in% c("Native Hawaiian and Other Pacificc Islander alone")
+  )
+
+americanindian <- racialdata %>%
+  filter(
+    race %in% c("American Indian ad Alaska Native alone")
+  )
+
+twoormore <- racialdata %>%
+  filter(
+    race %in% c("Two or more races")
+  )
+
+otherrace <- racialdata %>%
+  filter(
+    race %in% c("Some Other Race alone")
+  )
+
+res_pal2 <- colorNumeric(
+  palette = "Reds",
+  domain = 
+    whitedata$pop
+)
+
+res_pal3 <- colorNumeric(
+  palette = "Greens",
+  domain = 
+    asianalone$pop
+)
+
+res_pal4 <- colorNumeric(
+  palette = "Purples",
+  domain = 
+    blackalone$pop
+)
+
+res_pal5 <- colorNumeric(
+  palette = "Yellows",
+  domain = 
+    pacificislanderalone$pop
+)
+
+res_pal6 <- colorNumeric(
+  palette = "Oranges",
+  domain = 
+    americanindian$pop
+)
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = whitedata,
+    fillColor = ~res_pal2(pop),
+    group="White Population Density",
+    color = "white",
+    opacity = 0.3,
+    fillOpacity = 0.8,
+    weight = 1,
+    label = ~paste0(
+      round(pop), 
+      " white pop"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addPolygons(
+    data = calenviroscreenfourplotnew,
+    group="Groundwater Threat Risk",
+    fillColor = ~res_pal(Groundwater.Threats),
+    color = "white",
+    opacity = 0.3,
+    fillOpacity = 0.8,
+    weight = 1,
+    label = ~paste0(
+      round(Groundwater.Threats), 
+      " on the CES4.0 Groundwater Threat Risk Indice"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )) %>%
+  addPolygons(
+    data = asianalone,
+    group="Asian Population Density",
+    fillColor = ~res_pal3(pop),
+    color = "white",
+    opacity = 0.2,
+    fillOpacity = 0.8,
+    weight = 1,
+    label = ~paste0(
+      round(pop), 
+      " Asian alone pop"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )) %>%
+  addPolygons(
+    data = blackalone,
+    group="Black Population Density",
+    fillColor = ~res_pal4(pop),
+    color = "white",
+    opacity = 0.2,
+    fillOpacity = 0.8,
+    weight = 1,
+    label = ~paste0(
+      round(pop), 
+      " Black alone pop"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )) %>%
+  addPolygons(
+    data = pacificislanderalone,
+    group="Pacific Islander Population Density",
+    fillColor = ~res_pal5(pop),
+    color = "white",
+    opacity = 0.2,
+    fillOpacity = 0.8,
+    weight = 1,
+    label = ~paste0(
+      round(pop), 
+      " Pacific Islander alone pop"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )) %>%
+  addPolygons(
+    data = americanindian,
+    group="American Indian Population Density",
+    fillColor = ~res_pal6(pop),
+    color = "white",
+    opacity = 0.2,
+    fillOpacity = 0.8,
+    weight = 1,
+    label = ~paste0(
+      round(pop), 
+      " American Indian alone pop"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )) %>%
+    addLayersControl(
+      overlayGroups = c("White Population Density", "Groundwater Threat Risk", "Asian Population Density", "Black Population Density", "Pacific Islander Population Density", "American Indian Population Density"),
+      options = layersControlOptions(collapsed = FALSE)
+    )
+    
+    
+  #   %>% 
+  # addLegend(
+  #   data = calenviroscreenfourplotnew,
+  #   pal = res_pal,
+  #   values = ~Groundwater.Threats,
+  #   title = "Groundwater Threats,<br>census data"
+  # ) 
+
+
+```
+
+Equity Analysis
+
+```{r}
+#Next, we conducted an equity analysis by race for groundwater threat risk in San Francisco County
+
+simplifiedrace <- racialdata %>%
+    mutate(
+     GEOID = GEOID 
+  ) %>%
+  st_drop_geometry()  %>%
+  select(
+    c(GEOID, race, pop)
+  ) %>%
+  group_by(GEOID, race) %>%
+  summarize(Total.Population = sum(pop)) %>%
+  pivot_wider(
+    everything(),
+    names_from = "race",
+    values_from = "Total.Population"
+)
+    
+  
+raceriskdata <- simplifiedrace %>%
+   right_join(
+     calenviroscreenfourplotnew,
+     by = c("GEOID" = "GEOID")
+   )
+  
+
+calenviroscreenfourrisk <- raceriskdata %>% 
+  mutate(Threat.Risk = case_when(
+    between(Groundwater.Threats, 0, 20) ~ "Low Risk",
+    between(Groundwater.Threats, 20, 80.01) ~ "Medium Risk",
+    between(Groundwater.Threats, 20.01, 900) ~ "High Risk",
+  )) %>%
+  select(
+    c(Total.Population, Threat.Risk, "American Indian and Alaska Native alone", "Asian alone", "Black or African American alone", "Native Hawaiian and Other Pacific Islander alone", "Some Other Race alone", "Two or more races", "White alone")) %>%
+  group_by(Threat.Risk) %>% 
+  summarize(
+    "Total Population" = sum(Total.Population),
+    "Asian alone" = sum(as.numeric(`Asian alone`), na.rm = T),
+    "Black or African American alone"  = sum(as.numeric(`Black or African American alone`), na.rm = T),
+    "American Indian and Alaska Native alone" = sum(as.numeric(`American Indian and Alaska Native alone`), na.rm = T),
+    "Native Hawaiian and Other Pacific Islander alone" = sum(as.numeric(`Native Hawaiian and Other Pacific Islander alone`), na.rm = T),
+    "Some Other Race alone" = sum(as.numeric(`Some Other Race alone`), na.rm = T),
+    "Two or more races" = sum(as.numeric(`Two or more races`), na.rm = T),
+    "White alone" = sum(as.numeric(`White alone`), na.rm = T),
+  ) %>% 
+  select(-2)
+
+mutatedrisk <- calenviroscreenfourrisk %>%
+  pivot_longer(
+    !Threat.Risk,
+    names_to = "races",
+    values_to = "estimate"
+      )
+
+mutatedrisk %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = Threat.Risk  %>% factor(levels = rev(c("Total",unique(mutatedrisk$Threat.Risk)))),
+      y = estimate,
+      fill = races %>% factor(levels = rev(unique(mutatedrisk$races)))
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Groundwater Threat Risk",
+    y = "Proportion of population",
+    title = "San Francisco County Groundwater Threat Risk by Race",
+    fill = "Race"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )  +
+  guides(
+    fill = guide_legend(
+      reverse = T
+    )
+  )
+
+```
+
+Simple regression
+
+```{r}
+#We noticed in our last two data analysis that black populations are generally more at risk to groundwater threats. We conducted a simple regression looking at the percent black population per tract and groundwater threat risk.
+
+regressiondata <-
+  raceriskdata  %>%
+  select(
+    c(Total.Population, Groundwater.Threats, "American Indian and Alaska Native alone", "Asian alone", "Black or African American alone", "Native Hawaiian and Other Pacific Islander alone", "Some Other Race alone", "Two or more races", "White alone")) %>%
+  mutate(Total.Population = (`American Indian and Alaska Native alone` + `Asian alone` + `Black or African American alone` + `Native Hawaiian and Other Pacific Islander alone` + `Some Other Race alone` + `Two or more races` + `White alone`)) %>%
+  mutate(Percent.black = (`Black or African American alone`/Total.Population))%>%
+  na.omit(raceriskdata)
+
+
+#plots the data as scatter plot for groundwater risk by percent of POC in each tract 
+ggplot() +
+  geom_point(
+    data = regressiondata,
+    aes(
+      x = Percent.black,
+      y = Groundwater.Threats
+    )
+  )
+
+#adds regression line and line of best fit to the scatter plot
+
+slope <- 0 
+yintercept <- mean(regressiondata$Groundwater.Threats)
+best_fit_candidate <- slope * regressiondata$Percent.black + yintercept 
+
+ggplot(
+  data = regressiondata,
+  aes(
+      x = Percent.black,
+      y = Groundwater.Threats
+    )
+) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  geom_line(
+    aes(
+      x = regressiondata$Percent.black,
+      y = best_fit_candidate
+    ),
+    color = "red",
+    size = 1
+  )
+
+#regression analysis calculations 
+model <- lm(Percent.black ~ Groundwater.Threats, regressiondata)
+summary(model)
+
+```
